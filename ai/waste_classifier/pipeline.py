@@ -1,70 +1,49 @@
 """
-Single-pass inference: resize → YOLO → rule-based waste classification.
+Keras-first waste classification pipeline.
+
+This repo used to include a YOLO + rule-based pipeline, but the user has removed
+the old model and wants to rely on the provided Keras model instead.
 """
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import cv2
 
-from classifier import ClassificationResult, classify_detections
-from detector import Detection, detect_objects, detections_to_json
-from image_loader import resize_max_side
-from learned_classifier import predict_waste_class_from_bgr
+from keras_classifier import predict_from_bgr as keras_predict_from_bgr
 
 
-def _clip_xyxy(x1: float, y1: float, x2: float, y2: float, w: int, h: int) -> tuple[int, int, int, int]:
-    ix1 = max(0, min(int(round(x1)), w - 1))
-    iy1 = max(0, min(int(round(y1)), h - 1))
-    ix2 = max(0, min(int(round(x2)), w - 1))
-    iy2 = max(0, min(int(round(y2)), h - 1))
-    if ix2 < ix1:
-        ix1, ix2 = ix2, ix1
-    if iy2 < iy1:
-        iy1, iy2 = iy2, iy1
-    return ix1, iy1, ix2, iy2
+def resize_max_side(bgr: np.ndarray, *, max_side: int = 1280) -> np.ndarray:
+    if bgr is None or bgr.size == 0:
+        return bgr
+    h, w = bgr.shape[:2]
+    m = max(h, w)
+    if m <= max_side:
+        return bgr
+    scale = float(max_side) / float(m)
+    nh, nw = int(round(h * scale)), int(round(w * scale))
+    nh, nw = max(1, nh), max(1, nw)
+    return cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_AREA)
 
 
 def _infer_bin_color_override(
     bgr: np.ndarray,
-    dets: List[Detection],
-    *,
-    min_area_px: int = 32 * 32,
 ) -> tuple[str | None, float, str | None]:
     """
-    Heuristic: if a (detected) trash can region is dominantly green/blue, override stream.
+    Heuristic: if the image is dominantly green/blue, infer bin stream.
 
     Returns (override_classification, color_confidence, extra_reasoning).
     """
     if bgr is None or bgr.size == 0:
         return None, 0.0, None
 
-    h, w = bgr.shape[:2]
-
-    # Prefer the highest-confidence "trash can" detection.
-    trash_dets = [d for d in dets if str(d.label).strip().lower() in {"trash can", "trashcan"}]
-    # Only run color override when a trash can is actually detected.
-    # Using full-image fallback can produce false overrides on UI screenshots
-    # or scenes where non-bin colored regions dominate.
-    roi = None
-    if trash_dets:
-        best = max(trash_dets, key=lambda d: float(d.confidence))
-        x1, y1, x2, y2 = _clip_xyxy(*best.bbox_xyxy, w=w, h=h)
-        if (x2 - x1) * (y2 - y1) >= min_area_px:
-            roi = bgr[y1:y2, x1:x2]
-    else:
-        return None, 0.0, None
-
-    if roi is None or roi.size == 0:
-        return None, 0.0, None
-
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
     # HSV thresholds are intentionally broad to handle lighting variance.
-    # We compute dominance among "colored" pixels (green+blue), not the whole ROI,
-    # because bins often occupy a minority of the crop and backgrounds are neutral.
+    # We compute dominance among "colored" pixels (green+blue), not the whole image,
+    # because backgrounds are often neutral.
     green_mask = cv2.inRange(hsv, (30, 25, 25), (95, 255, 255))
     blue_mask = cv2.inRange(hsv, (85, 25, 25), (150, 255, 255))
 
@@ -84,7 +63,7 @@ def _infer_bin_color_override(
 
     # Require: enough colored pixels, and a clear winner among colored pixels.
     # These thresholds are designed for real photos with bags/shadows.
-    if colored_frac < 0.08:
+    if colored_frac < 0.06:
         return None, max(g / total, b / total), None
 
     if green_share >= 0.65 and (green_share - blue_share) >= 0.25:
@@ -137,80 +116,60 @@ def _infer_organic_scene_hint(bgr: np.ndarray) -> tuple[bool, float, str]:
     return True, organic_ratio, reason
 
 
-def run_pipeline(
+def classify_bgr(
     bgr: np.ndarray,
     *,
-    quality_factor: float,
-    conf_threshold: float,
-    model_name: str,
-    include_boxes: bool,
+    quality_factor: float = 1.0,
     max_side: int = 1280,
-) -> Tuple[ClassificationResult, np.ndarray, List[Detection]]:
-    """One YOLO forward pass; returns result tensor image (possibly resized), and raw detections."""
-    bgr_in, _ = resize_max_side(bgr, max_side=max_side)
-    dets = detect_objects(
-        bgr_in,
-        conf_threshold=conf_threshold,
-        model_name=model_name,
-    )
-    result = classify_detections(dets, quality_factor=quality_factor)
+) -> Tuple[Dict[str, Any], np.ndarray]:
+    """
+    Contract-compatible classifier used by the FastAPI `/classify` endpoint.
 
-    # Learned model (if checkpoint exists): can improve on cluttered scenes.
-    learned_pred = predict_waste_class_from_bgr(bgr_in)
-    if learned_pred:
-        learned_cls, learned_conf, learned_reason = learned_pred
-        # If heuristic output is unknown/mixed with low confidence, trust learned model.
-        # Otherwise, blend conservatively and keep stable behavior.
-        if (result.classification in {"Unknown", "Mixed"} and float(result.confidence) < 0.6) or (
-            learned_cls == result.classification and learned_cls != "Unknown"
-        ):
-            det_max = max((float(d.confidence) for d in dets), default=0.0)
-            det_count = len(dets)
-            # Conservative confidence merge to avoid extreme overconfidence
-            # on weak/noisy detections.
-            merged_conf = 0.65 * float(result.confidence) + 0.35 * (float(learned_conf) * float(quality_factor))
-            if det_count <= 1 and det_max < 0.45:
-                merged_conf = min(merged_conf, 0.72)
-            result = ClassificationResult(
-                classification=learned_cls,
-                confidence=round(min(0.95, max(0.0, merged_conf)), 4),
-                detected_objects=result.detected_objects,
-                reasoning=f"{learned_reason}. {result.reasoning}",
-                detections_detail=result.detections_detail,
-            )
+    Returns (payload_dict, image_used).
+    """
+    bgr_in = resize_max_side(bgr, max_side=max_side)
 
-    # Optional override: map bin color → stream.
-    override, color_conf, extra_reason = _infer_bin_color_override(bgr_in, dets)
+    override, override_conf, override_reason = _infer_bin_color_override(bgr_in)
+    keras_pred = keras_predict_from_bgr(bgr_in)
+
+    classification = "Unknown"
+    confidence = 0.0
+    reasoning_parts: list[str] = []
+    raw: Dict[str, Any] = {}
+
+    if keras_pred:
+        k_cls, k_conf, k_reason = keras_pred
+        raw["keras"] = {"mapped": k_cls, "confidence": float(k_conf), "reason": k_reason}
+        if k_cls != "Unknown":
+            classification = k_cls
+            confidence = float(min(0.95, max(0.0, float(k_conf) * float(quality_factor))))
+            reasoning_parts.append(f"{k_reason}. (Primary Keras model)")
+    else:
+        raw["keras"] = {"available": False}
+        reasoning_parts.append("Keras model not available (missing model files or TensorFlow).")
+
+    # Apply explicit bin color override last (user requirement).
     if override:
-        merged_conf = max(float(result.confidence), float(color_conf) * float(quality_factor))
-        reasoning = result.reasoning
-        if extra_reason:
-            reasoning = f"{extra_reason} {reasoning}"
-        result = ClassificationResult(
-            classification=override,
-            confidence=round(float(min(1.0, merged_conf)), 4),
-            detected_objects=result.detected_objects,
-            reasoning=reasoning,
-            detections_detail=result.detections_detail,
-        )
+        merged = max(float(confidence), float(override_conf) * float(quality_factor))
+        classification = override
+        confidence = float(min(0.99, merged))
+        if override_reason:
+            reasoning_parts.insert(0, override_reason)
 
-    # If scene looks strongly organic, avoid forcing non-bio on uncertain outputs.
+    # Organic hint: only when still unknown or weak non-bio.
     organic_hit, organic_strength, organic_reason = _infer_organic_scene_hint(bgr_in)
-    if organic_hit and result.classification == "Non-biodegradable" and float(result.confidence) < 0.75:
-        boosted = min(0.95, max(float(result.confidence), 0.45 + organic_strength * 0.8))
-        result = ClassificationResult(
-            classification="Biodegradable",
-            confidence=round(float(boosted), 4),
-            detected_objects=result.detected_objects,
-            reasoning=f"{organic_reason} {result.reasoning}",
-            detections_detail=result.detections_detail,
-        )
-    detail = detections_to_json(dets) if include_boxes else None
-    full = ClassificationResult(
-        classification=result.classification,
-        confidence=result.confidence,
-        detected_objects=result.detected_objects,
-        reasoning=result.reasoning,
-        detections_detail=detail,
-    )
-    return full, bgr_in, dets
+    if organic_hit and (classification == "Unknown" or (classification == "Non-biodegradable" and confidence < 0.70)):
+        classification = "Biodegradable"
+        confidence = float(min(0.95, max(confidence, 0.45 + organic_strength * 0.8)))
+        reasoning_parts.insert(0, organic_reason)
+
+    payload = {
+        "classification": classification,
+        "confidence": round(float(confidence), 4),
+        "detected_objects": [],
+        "reasoning": " ".join([p for p in reasoning_parts if p]),
+        "detections_detail": None,
+        "provider": "keras",
+        "raw": raw or None,
+    }
+    return payload, bgr_in

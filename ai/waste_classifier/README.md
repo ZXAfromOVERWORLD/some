@@ -1,3 +1,36 @@
+# Waste classifier (Keras primary)
+
+This service exposes a FastAPI endpoint used by the Node backend (`/api/ai/classify` → `AI_CLASSIFIER_URL/classify`).
+
+## Files expected
+
+- `keras_model/model.keras`
+- `keras_model/classes.json` (array of class names in the same order as model outputs)
+
+You can override paths with:
+
+- `WASTE_KERAS_MODEL_PATH`
+- `WASTE_KERAS_CLASSES_PATH`
+
+## Run locally
+
+```bash
+cd ai/waste_classifier
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app:app --host 0.0.0.0 --port 8000
+```
+
+## Response shape
+
+`POST /classify` returns:
+
+- `classification`: `Biodegradable` | `Non-biodegradable` | `Mixed` | `Unknown`
+- `confidence`: 0..1
+- `reasoning`: text
+- `provider`: `"keras"`
+
 # Waste classification agent
 
 AI-assisted **image → waste stream** classification using **YOLOv8** (COCO pre-trained) for object detection and a **rule layer** that maps labels to biodegradable, non-biodegradable, or mixed. OpenCV handles I/O and blur heuristics for confidence scaling.
@@ -10,6 +43,7 @@ AI-assisted **image → waste stream** classification using **YOLOv8** (COCO pre
 | `detector.py` | YOLOv8 inference, bounding boxes, optional drawing |
 | `classifier.py` | COCO label → waste category; Mixed if both present; Unknown if no detections |
 | `learned_classifier.py` | Optional fine-tuned image classifier (loads checkpoint if available) |
+| `keras_classifier.py` | Optional Keras model fallback (used when result is Unknown/low confidence) |
 | `pipeline.py` | Single-pass resize → detect → classify |
 | `main.py` | CLI: file, `--annotate`, `--webcam` |
 | `api.py` | FastAPI: `/classify`, `/classify_annotated`, simple HTML UI at `/` |
@@ -74,6 +108,22 @@ At inference time, `learned_classifier.py` loads:
 - default `models/waste_cls_best.pt`
 
 If checkpoint is missing, service falls back to the original YOLO+rules+color pipeline.
+
+## Keras fallback model (optional)
+
+If the primary pipeline returns `Unknown` (or very low confidence), the service can optionally load a Keras model.
+
+### Files expected
+
+- `ai/waste_classifier/keras_model/model.keras` (recommended) or a SavedModel dir
+- `ai/waste_classifier/keras_model/classes.json` (list of class names in order)
+
+### Env vars
+
+- `WASTE_KERAS_MODEL_PATH` (default `keras_model/model.keras`)
+- `WASTE_KERAS_CLASSES_PATH` (default `keras_model/classes.json`)
+
+If TensorFlow is not installed or files are missing, the fallback is silently skipped.
 
 ## HTTP API
 

@@ -1,11 +1,7 @@
-# PyTorch: install CPU or CUDA build from https://pytorch.org/ if needed
-torch>=2.0.0
-torchvision>=0.15.0
-ultralytics>=8.0.0
-Pillow>=10.0.0
-# Use opencv-python (not headless) so CLI --webcam and cv2.imshow work locally.
-opencv-python>=4.8.0
-numpy>=1.24.0
-fastapi>=0.100.0
-uvicorn[standard]>=0.22.0
-python-multipart>=0.0.6
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+numpy>=1.26.0
+opencv-python-headless>=4.9.0.80
+tensorflow>=2.15.0
+
