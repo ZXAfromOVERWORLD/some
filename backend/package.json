@@ -1,0 +1,31 @@
+{
+  "name": "smart-waste-backend",
+  "version": "1.0.0",
+  "description": "Smart Waste Management System - Backend API",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node node_modules/nodemon/bin/nodemon.js server.js",
+    "test": "jest --runInBand"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cloudinary": "^2.9.0",
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.1",
+    "express-rate-limit": "^8.3.1",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^8.23.0",
+    "multer": "^2.1.1",
+    "multer-storage-cloudinary": "^2.2.1",
+    "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0",
+    "mongodb-memory-server": "^11.0.1",
+    "nodemon": "^3.1.0",
+    "supertest": "^7.2.2"
+  }
+}

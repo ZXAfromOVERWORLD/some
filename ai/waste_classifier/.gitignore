@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.yolov8/
+*.pt
+out/
+*.egg-info/
