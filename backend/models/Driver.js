@@ -18,7 +18,8 @@ const driverSchema = new mongoose.Schema({
   },
   truckType: {
     type: String,
-    enum: ['Mixed', 'Biodegradable', 'Non-biodegradable'],
+    // Allow empty string so driver profiles can exist before truck type is set.
+    enum: ['Mixed', 'Biodegradable', 'Non-biodegradable', ''],
     default: '',
   },
   vehicleNumber: {

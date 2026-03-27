@@ -1,0 +1,24 @@
+# Secrets / env
+**/.env
+**/.env.*
+!**/.env.example
+
+# Node
+**/node_modules/
+**/dist/
+**/.vite/
+
+# Python / AI
+**/.venv/
+**/__pycache__/
+**/*.pyc
+ai/waste_classifier/models/
+ai/waste_classifier/data/
+ai/bin_fill_predictor/.venv/
+ai/bin_fill_predictor/__pycache__/
+
+# Uploads / generated files
+backend/uploads/
+
+# IDE
+.vscode/
